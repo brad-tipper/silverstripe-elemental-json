@@ -1,0 +1,29 @@
+---
+Name: elemental-json
+# After Elemental, so its block editor already exists when we hide it on file-managed pages.
+After:
+  - '#elemental'
+---
+SilverStripe\CMS\Model\SiteTree:
+  extensions:
+    - BradTipper\ElementalJson\Extensions\ManagedPageExtension
+DNADesign\Elemental\Models\BaseElement:
+  extensions:
+    - BradTipper\ElementalJson\Extensions\ManagedElementExtension
+SilverStripe\Assets\File:
+  extensions:
+    - BradTipper\ElementalJson\Extensions\ManagedFileExtension
+SilverStripe\Dev\Command\DbBuild:
+  extensions:
+    - BradTipper\ElementalJson\Extensions\SyncOnBuildExtension
+BradTipper\ElementalJson\ElementalJson:
+  # Relative to the project root. Page files live in <content_dir>/pages, assets in <content_dir>/assets.
+  content_dir: app/content
+  # Media library folder that committed assets are imported into (read-only in the CMS).
+  asset_folder: Managed
+  # Class used when a file creates a page and does not name one.
+  page_class: Page
+  # Publish pages (and their blocks) after syncing, when the page is already published or newly created.
+  publish: true
+  # Extra block aliases: alias => class. Aliases are also derived from class names (HeroBlock => hero).
+  types: {}
