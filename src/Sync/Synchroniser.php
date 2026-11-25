@@ -96,9 +96,13 @@ class Synchroniser
         try {
             $page ??= $this->create($file);
             $wasPublished = !$creating && $page->isPublished();
-            $this->configurePage($page, $file, $hash);
+            $forms = $this->configurePage($page, $file, $hash);
             if (ElementalJson::config()->get('publish') && ($creating || $wasPublished)) {
                 $page->publishRecursive();
+            }
+            // Writing and publishing a form makes UserForms add a "First Page" step; remove it unless the file lists steps.
+            foreach ($forms as [$form, $block]) {
+                $this->healFormSteps($form, $block);
             }
             DB::get_conn()->transactionEnd();
         } catch (\Throwable $e) {
@@ -114,8 +118,10 @@ class Synchroniser
         }
     }
 
-    private function configurePage(SiteTree $page, PageFile $file, string $hash): void
+    /** @return list<array{0: DataObject, 1: array<string, mixed>}> the form blocks that were synced, with their file data */
+    private function configurePage(SiteTree $page, PageFile $file, string $hash): array
     {
+        $forms = [];
         $data = $file->data;
         $pageData = array_intersect_key($data, array_flip(['title', 'menu_title', 'meta_description', 'show_in_menus', 'show_in_search']));
         $page->ManagedSource = $file->relativePath;
@@ -130,9 +136,12 @@ class Synchroniser
         /** @var list<BaseElement> $existing */
         $existing = array_values($area->Elements()->toArray());
         $byKey = [];
+        $unkeyed = [];
         foreach ($existing as $element) {
             if ($element->ManagedKey) {
                 $byKey[$element->ManagedKey] = $element;
+            } else {
+                $unkeyed[] = $element;
             }
         }
 
@@ -141,6 +150,18 @@ class Synchroniser
             $where = "{$file->relativePath}.blocks[$i]({$block['id']})";
             $class = $this->types->block($block['type'], $where);
             $element = $byKey[$block['id']] ?? null;
+            if (!$element) {
+                // First sync of a page built in the CMS: adopt its existing block of the same type (in order), so
+                // nothing is recreated. This is what keeps a form block, and any submissions on it, in place.
+                foreach ($unkeyed as $at => $candidate) {
+                    if (get_class($candidate) === $class) {
+                        $element = $candidate;
+                        $element->ManagedKey = $block['id'];
+                        unset($unkeyed[$at]);
+                        break;
+                    }
+                }
+            }
             if ($element && get_class($element) !== $class) {
                 $this->remove($element, "$where changes type");
                 $element = null;
@@ -153,6 +174,9 @@ class Synchroniser
             $element->Sort = $i + 1;
             $this->mapper->apply($element, $block, $where, $element, ['type', 'id']);
             $keep[$element->ID] = true;
+            if (DataObject::getSchema()->hasManyComponent(get_class($element), 'Fields') !== null) {
+                $forms[] = [$element, $block];
+            }
         }
         foreach ($existing as $element) {
             if ($element->ID && !isset($keep[$element->ID])) {
@@ -160,6 +184,36 @@ class Synchroniser
             }
         }
         $page->write();
+        return $forms;
+    }
+
+    /**
+     * UserForms adds a "First Page" step whenever a form is written and its first field is not a step, and renumbers
+     * the other fields. A form configured from a file has exactly the fields it lists, so take the extra step away
+     * (from both stages) and put the sort order back to the file's order.
+     *
+     * @param array<string, mixed> $block
+     */
+    private function healFormSteps(DataObject $form, array $block): void
+    {
+        $names = [];
+        foreach (($block['fields'] ?? []) as $item) {
+            if (isset($item['name'])) {
+                $names[] = (string) $item['name'];
+            }
+        }
+        $order = array_flip($names);
+        $fieldClass = DataObject::getSchema()->hasManyComponent(get_class($form), 'Fields');
+        $table = DataObject::getSchema()->tableName($fieldClass);
+        foreach ($form->Fields() as $field) {
+            if (!isset($order[$field->Name])) {
+                $field->doArchive();
+                continue;
+            }
+            foreach ([$table, $table . '_Live'] as $t) {
+                DB::prepared_query("UPDATE \"$t\" SET \"Sort\" = ? WHERE \"ID\" = ?", [$order[$field->Name] + 1, $field->ID]);
+            }
+        }
     }
 
     /** Remove a block, unless that would lose the submissions made through it. */

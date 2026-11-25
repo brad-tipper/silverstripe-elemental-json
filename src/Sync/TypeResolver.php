@@ -27,6 +27,18 @@ final class TypeResolver
         return $this->among(BaseElement::class, $type, $where, ['/(Block|Element)$/']);
     }
 
+    /** The derived alias of a block class: HeroBlock => hero. */
+    public static function aliasFor(string $class): string
+    {
+        return strtolower((string) preg_replace('/(Block|Element)$/', '', ClassInfo::shortName($class)));
+    }
+
+    /** The derived alias of a child class: EditableTextField => text. */
+    public static function childAliasFor(string $class): string
+    {
+        return strtolower((string) preg_replace(['/^Editable/', '/Field$/'], '', ClassInfo::shortName($class)));
+    }
+
     /**
      * @param class-string $base
      * @return class-string

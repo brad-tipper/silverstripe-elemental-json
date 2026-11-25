@@ -7,6 +7,7 @@ Configure a page's Elemental blocks from JSON or YAML files committed with the c
 - A matched page shows a notice in the CMS and its **block editor is hidden**. The file owns the whole block area.
 - Assets are **only files committed next to the content**, imported into a read-only `Managed` folder in the media library.
 - **Form submissions are never deleted by a sync.**
+- `sake tasks:elemental-json-export` writes an existing CMS site out as these files (and copies its images), and the first sync **adopts** the existing blocks in place rather than recreating them.
 
 ## Layout
 

@@ -22,6 +22,9 @@ final class FieldMapper
     /** Relations a file may not touch, because they hold data users created. */
     private const PROTECTED = ['Submissions', 'Values', 'SubmittedBy'];
 
+    /** @var list<array{0: DataObject, 1: string, 2: string, 3: mixed, 4: string, 5: DataObject}> references to form fields not created yet */
+    private array $deferred = [];
+
     public function __construct(private readonly AssetImporter $assets, private readonly TypeResolver $types)
     {
     }
@@ -82,6 +85,9 @@ final class FieldMapper
                 $this->applySibling($object, $name, $target, $value, $path, $root);
             }
         }
+        if ($object === $root) {
+            $this->resolveDeferred();
+        }
     }
 
     /** @return array{0: string, 1: string, 2: string|null} kind (field|file|sibling|many), name, target class */
@@ -126,10 +132,26 @@ final class FieldMapper
         }
         $field = $target::get()->filter(['Name' => (string) $value, 'ParentID' => $root->ID])->first();
         if (!$field) {
-            throw new ContentException("$path: no field named '$value' in this form. List 'fields' before 'recipients'.");
+            // It may be a field later in the same list (a group's end marker); settle it once the whole block is built.
+            $this->deferred[] = [$object, $name, $target, $value, $path, $root];
+            return;
         }
         $object->setField($name . 'ID', $field->ID);
         $object->write();
+    }
+
+    private function resolveDeferred(): void
+    {
+        $pending = $this->deferred;
+        $this->deferred = [];
+        foreach ($pending as [$object, $name, $target, $value, $path, $root]) {
+            $field = $target::get()->filter(['Name' => (string) $value, 'ParentID' => $root->ID])->first();
+            if (!$field) {
+                throw new ContentException("$path: no field named '$value' in this form.");
+            }
+            $object->setField($name . 'ID', $field->ID);
+            $object->write();
+        }
     }
 
     /** @param class-string<DataObject> $childBase */

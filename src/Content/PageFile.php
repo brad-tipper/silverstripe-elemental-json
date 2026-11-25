@@ -31,7 +31,8 @@ final class PageFile
     public function assetRefs(): array
     {
         $refs = [];
-        array_walk_recursive($this->data, static function ($value) use (&$refs): void {
+        $data = $this->data;
+        array_walk_recursive($data, static function ($value) use (&$refs): void {
             if (is_string($value) && str_starts_with($value, '@')) {
                 $refs[] = $value;
             }
