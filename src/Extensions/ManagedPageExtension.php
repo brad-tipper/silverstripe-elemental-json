@@ -36,18 +36,37 @@ class ManagedPageExtension extends Extension
             return;
         }
 
+        // Elemental is usually applied to Page, so its extension can run after this one (which is on SiteTree) and add
+        // the block editor back. Run after every extension has had its say.
+        $owner = $this->owner;
+        $apply = function (FieldList $fields) use ($owner): void {
+            $this->hideEditor($fields, $owner);
+        };
+        (function () use ($apply) {
+            $this->afterExtending('updateCMSFields', $apply);
+        })->call($owner);
+    }
+
+    private function hideEditor(FieldList $fields, SiteTree $owner): void
+    {
         $fields->removeByName('ElementalArea');
         $fields->removeByName('Content');
 
-        $source = Convert::raw2xml($this->owner->ManagedSource);
+        // The file sets the title, so it is shown but cannot be changed (a change would be reverted on the next sync).
+        $title = $fields->dataFieldByName('Title');
+        if ($title) {
+            $fields->replaceField('Title', $title->performReadonlyTransformation());
+        }
+
+        $source = Convert::raw2xml($owner->ManagedSource);
         $fields->findOrMakeTab('Root.Main')->unshift(LiteralField::create(
             'ManagedContentNotice',
             '<div class="alert alert-info" role="status"><strong>This page\'s content is configured in code.</strong> '
-            . "Its blocks come from <code>$source</code> and are rebuilt on every deploy, so they cannot be edited here. "
-            . 'Edit the file and deploy to change them. Title, URL and settings below can still be edited, except where the file sets them.</div>'
+            . "Its title and blocks come from <code>$source</code> and are rebuilt on every deploy, so they cannot be edited here. "
+            . 'Edit the file and deploy to change them. URL and other settings below can still be edited.</div>'
         ));
 
-        $submissions = $this->submissionsGrid();
+        $submissions = $this->submissionsGrid($owner);
         if ($submissions) {
             $fields->addFieldToTab('Root.FormSubmissions', $submissions);
             $fields->findOrMakeTab('Root.FormSubmissions')->setTitle('Form submissions');
@@ -55,15 +74,15 @@ class ManagedPageExtension extends Extension
     }
 
     /** Submissions of every form block on this page, across all of them, so they stay reachable while the editor is hidden. */
-    private function submissionsGrid(): ?GridField
+    private function submissionsGrid(SiteTree $owner): ?GridField
     {
         $formClass = 'DNADesign\\ElementalUserForms\\Model\\ElementForm';
         $submittedClass = 'SilverStripe\\UserForms\\Model\\Submission\\SubmittedForm';
-        if (!class_exists($formClass) || !class_exists($submittedClass) || !$this->owner->ElementalAreaID) {
+        if (!class_exists($formClass) || !class_exists($submittedClass) || !$owner->ElementalAreaID) {
             return null;
         }
         $formIds = BaseElement::get()
-            ->filter(['ParentID' => $this->owner->ElementalAreaID, 'ClassName' => ClassInfo::subclassesFor($formClass)])
+            ->filter(['ParentID' => $owner->ElementalAreaID, 'ClassName' => ClassInfo::subclassesFor($formClass)])
             ->column('ID');
         if (!$formIds) {
             return null;
