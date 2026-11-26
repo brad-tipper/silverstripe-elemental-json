@@ -107,7 +107,7 @@ class ContentLoader
         } catch (\JsonException | ParseException $e) {
             throw new ContentException("$where: could not parse: " . $e->getMessage(), 0, $e);
         }
-        if (!is_array($data)) {
+        if (!is_array($data) || ($data !== [] && array_is_list($data))) {
             throw new ContentException("$where: the file must contain a mapping at the top level.");
         }
         return $data;

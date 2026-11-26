@@ -2,6 +2,7 @@
 
 namespace BradTipper\ElementalJson\Export;
 
+use BradTipper\ElementalJson\Content\HtmlRefs;
 use BradTipper\ElementalJson\ElementalJson;
 use BradTipper\ElementalJson\Sync\TypeResolver;
 use SilverStripe\Assets\File;
@@ -119,7 +120,11 @@ class Exporter
             if ($value === null || $value === '' || (string) $value === (string) $blank->getField($field)) {
                 continue;
             }
-            $out[$this->snake($field)] = $this->scalar($value, $spec);
+            $value = $this->scalar($value, $spec);
+            if (is_string($value) && str_starts_with($spec, 'HTML')) {
+                $value = $this->portableHtml($value);
+            }
+            $out[$this->snake($field)] = $value;
         }
 
         foreach ($object->hasOne() as $name => $target) {
@@ -165,6 +170,22 @@ class Exporter
             }
         }
         return $out;
+    }
+
+    /** Shortcodes hold IDs that only mean something here: write them back as `@asset` and `page:slug`. */
+    private function portableHtml(string $html): string
+    {
+        return HtmlRefs::fromShortcodes(
+            $html,
+            function (int $id): ?string {
+                $file = File::get()->byID($id);
+                return $file ? $this->copyAsset($file) : null;
+            },
+            function (int $id): ?string {
+                $page = SiteTree::get()->byID($id);
+                return $page ? $this->slugOf($page) : null;
+            },
+        );
     }
 
     private function scalar(mixed $value, string $spec): mixed

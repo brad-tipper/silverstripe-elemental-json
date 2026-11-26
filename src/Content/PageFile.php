@@ -27,16 +27,48 @@ final class PageFile
         return $this->data['blocks'];
     }
 
-    /** Every `@asset` reference in the file, in order. @return list<string> */
+    /** Every `@asset` reference in the file, including those inside HTML. @return list<string> */
     public function assetRefs(): array
     {
         $refs = [];
-        $data = $this->data;
-        array_walk_recursive($data, static function ($value) use (&$refs): void {
-            if (is_string($value) && str_starts_with($value, '@')) {
+        foreach ($this->strings() as $value) {
+            if (str_starts_with($value, '@')) {
                 $refs[] = $value;
+            } elseif (str_contains($value, '<')) {
+                array_push($refs, ...HtmlRefs::find($value)['assets']);
+            }
+        }
+        return $refs;
+    }
+
+    /** Slugs of the pages linked to with `page:slug` in the file's HTML. @return list<string> */
+    public function pageRefs(): array
+    {
+        $refs = [];
+        foreach ($this->strings() as $value) {
+            if (str_contains($value, '<')) {
+                array_push($refs, ...HtmlRefs::find($value)['pages']);
+            }
+        }
+        return array_values(array_unique($refs));
+    }
+
+    /** Whether any `page:slug#anchor` link is in the file. */
+    public function hasAnchorLinks(): bool
+    {
+        return (bool) preg_grep('/\shref\s*=\s*["\']page:[^"\'#]*#/i',$this->strings());
+    }
+
+    /** @return list<string> */
+    private function strings(): array
+    {
+        $strings = [];
+        $data = $this->data;
+        array_walk_recursive($data, static function ($value) use (&$strings): void {
+            if (is_string($value)) {
+                $strings[] = $value;
             }
         });
-        return $refs;
+        return $strings;
     }
 }

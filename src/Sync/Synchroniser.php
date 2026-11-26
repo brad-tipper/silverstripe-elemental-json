@@ -22,6 +22,12 @@ use SilverStripe\Versioned\Versioned;
  */
 class Synchroniser
 {
+    /** ManagedHash of a page created early, only so a link could point at it; its own file is not synced yet. */
+    private const STUB = 'stub';
+
+    /** @var array<string, PageFile> every content file, by slug */
+    private array $files = [];
+
     private readonly AssetImporter $assets;
 
     private readonly FieldMapper $mapper;
@@ -32,7 +38,7 @@ class Synchroniser
     {
         $this->assets = new AssetImporter();
         $this->types = new TypeResolver();
-        $this->mapper = new FieldMapper($this->assets, $this->types);
+        $this->mapper = new FieldMapper($this->assets, $this->types, fn (string $slug): int => $this->linkTarget($slug));
     }
 
     public function syncAll(bool $dryRun = false, bool $force = false, ?string $only = null): SyncReport
@@ -44,6 +50,10 @@ class Synchroniser
             $report->errors['(content)'] = $e->getMessage();
             $this->say('<error>' . $e->getMessage() . '</error>');
             return $report;
+        }
+        $this->files = [];
+        foreach ($files as $file) {
+            $this->files[$file->slug] = $file;
         }
         $only = $only !== null ? ContentLoader::normaliseSlug($only) : null;
 
@@ -60,6 +70,9 @@ class Synchroniser
                     $this->say("<error>{$file->slug}: {$e->getMessage()}</error>");
                 }
             }
+            if (!$dryRun) {
+                $this->recheckAnchors($files, $report);
+            }
             if ($only === null) {
                 $this->release($files, $dryRun, $report);
             }
@@ -69,7 +82,32 @@ class Synchroniser
         return $report;
     }
 
-    private function syncPage(PageFile $file, bool $dryRun, bool $force, SyncReport $report): void
+    /**
+     * The CMS marks a link broken if its anchor is not on the target when the link is saved, which is the case when
+     * the target is synced later in the same run. Save those pages once more, now that every target is in place.
+     *
+     * @param list<PageFile> $files
+     */
+    private function recheckAnchors(array $files, SyncReport $report): void
+    {
+        $changed = array_flip([...$report->created, ...$report->updated]);
+        if (count($changed) < 2) {
+            return;
+        }
+        foreach ($files as $file) {
+            if (!isset($changed[$file->slug]) || !$file->hasAnchorLinks()) {
+                continue;
+            }
+            try {
+                $this->syncPage($file, false, true, new SyncReport(), true);
+            } catch (\Throwable $e) {
+                $report->errors[$file->slug] = $e->getMessage();
+                $this->say("<error>{$file->slug}: {$e->getMessage()}</error>");
+            }
+        }
+    }
+
+    private function syncPage(PageFile $file, bool $dryRun, bool $force, SyncReport $report, bool $quiet = false): void
     {
         $hash = $this->hashFor($file);
         $page = $this->find($file->slug);
@@ -81,7 +119,7 @@ class Synchroniser
         if (!$page && empty($file->data['create'])) {
             throw new ContentException("{$file->relativePath}: no page at '{$file->slug}'. Create it in the CMS, or add 'create: true'.");
         }
-        $creating = !$page;
+        $creating = !$page || $page->ManagedHash === self::STUB;
         if ($dryRun) {
             $this->say(($creating ? 'would create ' : 'would update ') . $file->slug);
             if ($creating) {
@@ -96,7 +134,7 @@ class Synchroniser
         try {
             $page ??= $this->create($file);
             $wasPublished = !$creating && $page->isPublished();
-            $forms = $this->configurePage($page, $file, $hash);
+            $forms = $this->configurePage($page, $file);
             if (ElementalJson::config()->get('publish') && ($creating || $wasPublished)) {
                 $page->publishRecursive();
             }
@@ -110,7 +148,9 @@ class Synchroniser
             throw $e;
         }
 
-        $this->say(($creating ? 'created ' : 'updated ') . $file->slug);
+        if (!$quiet) {
+            $this->say(($creating ? 'created ' : 'updated ') . $file->slug);
+        }
         if ($creating) {
             $report->created[] = $file->slug;
         } else {
@@ -119,13 +159,12 @@ class Synchroniser
     }
 
     /** @return list<array{0: DataObject, 1: array<string, mixed>}> the form blocks that were synced, with their file data */
-    private function configurePage(SiteTree $page, PageFile $file, string $hash): array
+    private function configurePage(SiteTree $page, PageFile $file): array
     {
         $forms = [];
         $data = $file->data;
         $pageData = array_intersect_key($data, array_flip(['title', 'menu_title', 'meta_description', 'show_in_menus', 'show_in_search']));
         $page->ManagedSource = $file->relativePath;
-        $page->ManagedHash = $hash;
         $this->mapper->apply($page, $pageData, $file->relativePath, $page);
 
         $area = $page->ElementalArea();
@@ -183,6 +222,8 @@ class Synchroniser
                 $this->remove($element, "{$file->relativePath} no longer lists block " . ($element->ManagedKey ?: '#' . $element->ID));
             }
         }
+        // Taken now, not before the sync, so pages created for links are included with their IDs.
+        $page->ManagedHash = $this->hashFor($file);
         $page->write();
         return $forms;
     }
@@ -262,7 +303,30 @@ class Synchroniser
     private function hashFor(PageFile $file): string
     {
         $assetHashes = array_map(fn (string $ref) => $ref . ':' . $this->assets->hashOf($ref), $file->assetRefs());
-        return sha1(ElementalJson::FORMAT_VERSION . '|' . $file->rawHash . '|' . implode(',', $assetHashes));
+        $parts = [ElementalJson::FORMAT_VERSION, $file->rawHash, implode(',', $assetHashes)];
+        // A linked page's ID is part of the content, so a link is rewritten if its target is recreated.
+        $links = array_map(fn (string $slug) => $slug . '=' . ($this->find($slug)?->ID ?? 0), $file->pageRefs());
+        if ($links) {
+            $parts[] = implode(',', $links);
+        }
+        return sha1(implode('|', $parts));
+    }
+
+    private function linkTarget(string $slug): int
+    {
+        $page = $this->find($slug);
+        if ($page) {
+            return $page->ID;
+        }
+        $file = $this->files[$slug] ?? null;
+        if (!$file || empty($file->data['create'])) {
+            throw new ContentException("Link to 'page:$slug': there is no such page, and no content file creates it.");
+        }
+        $page = $this->create($file);
+        $page->ManagedSource = $file->relativePath;
+        $page->ManagedHash = self::STUB;
+        $page->write();
+        return $page->ID;
     }
 
     private function find(string $slug): ?SiteTree

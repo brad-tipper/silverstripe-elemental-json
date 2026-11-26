@@ -84,9 +84,32 @@ Only committed files. Reference them as `@path/inside/assets`:
 - a file is matched by its path and only replaced when its content changes, so re-syncs never duplicate;
 - a missing file or a path outside `assets/` is an error.
 
+## Rich text (HTML fields)
+
+`HTMLText` and `HTMLVarchar` fields take HTML. Write it with portable references; the sync turns them into the same shortcodes the CMS editor writes, so images, file tracking and links work as usual:
+
+```yaml
+    content: |-
+      <h2>Your dashboard</h2>
+      <p><img src="@help/dashboard.png" alt="The dashboard" width="600"></p>
+      <p><a href="@help/guide.pdf">Download the guide</a> or read about <a href="page:help/billing#refunds">refunds</a>.</p>
+```
+
+| You write | Stored as |
+| --- | --- |
+| `<img src="@path">` | `[image src="..." id="..." width="..." height="..." ...]` |
+| `<a href="@path">` | `<a href="[file_link,id=...]">` |
+| `<a href="page:slug#anchor">` | `<a href="[sitetree_link,id=...]#anchor">` |
+
+- `alt`, `class`, `title` and other attributes are kept. Give one of `width` or `height` and the other follows the image's shape; give neither to use its own size. Without a `class`, the editor's default is used.
+- `page:` takes a full slug (`page:home` for the home page). It may point at a page another file creates. A link to a page that does not exist is an error.
+- Ordinary URLs are left alone. Don't write shortcodes with IDs by hand: IDs differ between environments.
+- The HTML is otherwise stored as written. The CMS editor's tag clean-up does not run on it, and Markdown is not supported.
+- The export converts shortcodes back to these references.
+
 ## What happens in the CMS
 
-On a page that has a file, the block editor is replaced by a notice that names the file. Title, URL and settings stay editable (the file wins for the ones it sets). If the file is deleted, the page is released: its blocks stay as they were and it becomes editable again.
+On a page that has a file, the block editor is replaced by a notice that names the file. The title, and any page setting the file sets (menu title, meta description, visibility), are read-only; the rest stay editable. If the file is deleted, the page is released: its blocks stay as they were and it becomes editable again.
 
 ## Running it
 

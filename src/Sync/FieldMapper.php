@@ -3,9 +3,13 @@
 namespace BradTipper\ElementalJson\Sync;
 
 use BradTipper\ElementalJson\Assets\AssetImporter;
+use BradTipper\ElementalJson\Content\HtmlRefs;
 use BradTipper\ElementalJson\ContentException;
 use SilverStripe\Assets\File;
+use SilverStripe\Assets\Image;
 use SilverStripe\ORM\DataObject;
+use SilverStripe\ORM\FieldType\DBHTMLText;
+use SilverStripe\ORM\FieldType\DBHTMLVarchar;
 use SilverStripe\Versioned\Versioned;
 
 /**
@@ -25,8 +29,12 @@ final class FieldMapper
     /** @var list<array{0: DataObject, 1: string, 2: string, 3: mixed, 4: string, 5: DataObject}> references to form fields not created yet */
     private array $deferred = [];
 
-    public function __construct(private readonly AssetImporter $assets, private readonly TypeResolver $types)
-    {
+    /** @param \Closure(string): int $pageId the ID of the page at a slug, for `page:slug` links */
+    public function __construct(
+        private readonly AssetImporter $assets,
+        private readonly TypeResolver $types,
+        private readonly \Closure $pageId,
+    ) {
     }
 
     /**
@@ -55,6 +63,9 @@ final class FieldMapper
                 case 'field':
                     if (is_array($value)) {
                         throw new ContentException("$path: expected a single value for '$name', got a list or mapping.");
+                    }
+                    if (is_string($value) && str_contains($value, '<') && $this->isHtml($object, $name)) {
+                        $value = $this->html($value);
                     }
                     $object->setField($name, $value);
                     break;
@@ -88,6 +99,34 @@ final class FieldMapper
         if ($object === $root) {
             $this->resolveDeferred();
         }
+    }
+
+    private function isHtml(DataObject $object, string $name): bool
+    {
+        $field = $object->dbObject($name);
+        return $field instanceof DBHTMLText || $field instanceof DBHTMLVarchar;
+    }
+
+    /** Turn portable `@asset` and `page:slug` references into the shortcodes the CMS editor would have written. */
+    private function html(string $html): string
+    {
+        return HtmlRefs::toShortcodes(
+            $html,
+            function (string $ref): array {
+                $file = $this->assets->import($ref);
+                if (!$file instanceof Image) {
+                    throw new ContentException("'$ref' is used in an <img> but is not an image.");
+                }
+                return [
+                    'id' => $file->ID,
+                    'url' => (string) $file->getURL(),
+                    'width' => (int) $file->getWidth(),
+                    'height' => (int) $file->getHeight(),
+                ];
+            },
+            fn (string $ref): int => $this->assets->import($ref)->ID,
+            $this->pageId,
+        );
     }
 
     /** @return array{0: string, 1: string, 2: string|null} kind (field|file|sibling|many), name, target class */
